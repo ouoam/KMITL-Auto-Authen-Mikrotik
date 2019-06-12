@@ -1,0 +1,117 @@
+:global loginUser "";
+:global loginPass "";
+
+:global loginServer "http://connect.kmitl.ac.th:8080";
+
+global JSONLoads;
+if (!any $JSONLoads) do={
+	/system script run "JParseFunctions";
+}
+
+global Llogin;
+if (!any $Llogin) do={
+  :global Llogin do={
+    :log info "Auto-Login: Loging in..."
+    global loginServer; global loginUser; global loginPass; global JSONLoad; global JSONLoads; global JSONUnload;
+    :local data "userName=$loginUser&password=$loginPass&browserFlag=en";
+    :local url "$loginServer/PortalServer/Webauth/webAuthAction!login.action";
+    :local content ([/tool fetch http-method=post http-data=$data url=$url as-value output=user]->"data");
+    :set content [$JSONLoads $content];
+    if ($content->"success") do={
+      :global LServerIP ($content->"data"->"belongedSCIP");
+      :global LAccount ($content->"data"->"account");
+      :global LSessionId ($content->"data"->"sessionId");
+      :local token ($content->"token");
+      :global LToken [:pick $token 6 [:len $token]];
+      :local Heatbeat [:totime (($content->"data"->"webHeatbeatPeriod") . "ms")];
+
+      :log info "Auto-Login: Login sucessful  USER:$LAccount IP:$($content->"data"->"ip")";
+
+      # Set scheduler for heartbeat
+      if ([system scheduler find name="AutoLogin-Hearbeat"] = "") do={
+        /system scheduler add name="AutoLogin-Hearbeat" on-event="global Lhearbeat;\r\n\$Lhearbeat;";
+      }
+      /system scheduler set "AutoLogin-Hearbeat" interval=$Heatbeat start-time=[/system clock get time];
+
+      :return true;
+    } else={
+      # Never test this
+      :log error "Auto-Login: Can not login... server-msg: $($content->"message")";
+      :log info ($content);
+      :return false;
+    }
+  }
+}
+
+global LcheckConnection;
+  if (!any $LcheckConnection) do={
+  :global LcheckConnection do={
+    global Llogin;
+    :local detect "nonono";
+    :do {
+      :set detect ([/tool fetch url=http://clients3.google.com/generate_204 as-value output=user]->"data");
+    } on-error={
+      :return "nointernet";
+    }
+    if ($detect = "") do={
+      :return "loged-in";
+    } else={
+      :do {
+        # http://connect.kmitl.ac.th:8080
+              :global loginServer [:pick $detect ([:find $detect "URL="]+4) [:find $detect "/portal"]];
+      } on-error={
+        # :global loginServer "http://connect.kmitl.ac.th:8080";
+      };
+      :return "notlogin";
+    }
+  }
+}
+
+global Lhearbeat;
+if (!any $Lhearbeat) do={
+  :global Lhearbeat do={
+    global LAccount; global LSessionId; global LToken; global LServerIP; global LcheckConnection; global Llogin; global JSONLoad; global JSONLoads; global JSONUnload;
+    :local data "userName=$LAccount&sessionId=$LSessionId";
+    :local url "http://$LServerIP:8080/PortalServer/Webauth/webAuthAction!hearbeat.action";
+    :local content ([/tool fetch http-method=post http-data=$data url=$url http-header-field="X-XSRF-TOKEN:$LToken" host="$LServerIP:8080" as-value output=user]->"data");
+    :set content [$JSONLoads $content];
+    if ($content->"data" = "ONLINE") do={
+      :log info "Auto-Login: HeartBeat OK...";
+    } else={
+      :log error "Auto-Login: HeartBeat ERROR... server-msg: $($content->"message")";
+      $LcheckConnection
+      $Llogin;
+    }
+  }
+}
+
+global Linit;
+if (!any $Linit) do={
+  :global Linit do={
+    :log info "Auto-Login: init..."
+    if ([system scheduler find name="AutoLogin-AutoStart"] = "") do={
+      /system scheduler add on-event=":delay 10s;\r\n/system script run \"Auto-Login-KMITL\";" name="AutoLogin-AutoStart" start-time=startup;
+    }
+    global LcheckConnection; global Llogin;
+    :log info "Auto-Login: Run Check connection...";
+    while ([$LcheckConnection] = "nointernet") do={
+      :log info "Auto-Login:  Retry Connection..."
+      :delay 3s;
+    }
+    :log info "Auto-Login: Run Login";
+    :local retry 0;
+    while (([$Llogin] = false) && ($retry < 10)) do={
+      :set retry ($retry + 1);
+      :log info "Auto-Login:  Retry Login..."
+      :delay 3s;
+    }
+    if ($retry >= 10) do={
+      :log error "Auto-Login: Cannot loin. Please recheck your username and password...";
+    } else={
+      :log info "Auto-Login: Finish Login";
+    }
+  }
+}
+
+global Linit;
+$Linit;
