@@ -71,6 +71,17 @@ global Lhearbeat;
 if (!any $Lhearbeat) do={
   :global Lhearbeat do={
     global LAccount; global LSessionId; global LToken; global LServerIP; global LcheckConnection; global Llogin; global JSONLoad; global JSONLoads; global JSONUnload;
+    
+    if ([$LcheckConnection] = "notlogin") do={
+      :log info "Auto-Login:  Lost Connection, Retry login..."
+      :local retry 0;
+      while (([$Llogin] = false) && ($retry < 10)) do={
+        :set retry ($retry + 1);
+        :log info "Auto-Login:  Retry Login..."
+        :delay 3s;
+      }
+    }
+
     :local data "userName=$LAccount&sessionId=$LSessionId";
     :local url "http://$LServerIP:8080/PortalServer/Webauth/webAuthAction!hearbeat.action";
     :local content ([/tool fetch http-method=post http-data=$data url=$url http-header-field="X-XSRF-TOKEN:$LToken" host="$LServerIP:8080" as-value output=user]->"data");
