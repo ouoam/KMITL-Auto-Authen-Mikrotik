@@ -49,16 +49,21 @@ global LcheckConnection;
     global Llogin;
     :local detect "nonono";
     :do {
-      :set detect ([/tool fetch url=http://clients3.google.com/generate_204 as-value output=user]->"data");
+      :put [:resolve server=8.8.8.8 www.google.com];
     } on-error={
       :return "nointernet";
+    }
+    :do {
+      :set detect ([/tool fetch url=http://clients3.google.com/generate_204 as-value output=user]->"data");
+    } on-error={
+      :return "notlogin";
     }
     if ($detect = "") do={
       :return "loged-in";
     } else={
       :do {
         # http://connect.kmitl.ac.th:8080
-              :global loginServer [:pick $detect ([:find $detect "URL="]+4) [:find $detect "/portal"]];
+        :global loginServer [:pick $detect ([:find $detect "URL="]+4) [:find $detect "/portal"]];
       } on-error={
         # :global loginServer "http://connect.kmitl.ac.th:8080";
       };
