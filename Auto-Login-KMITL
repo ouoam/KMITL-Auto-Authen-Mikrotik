@@ -5,7 +5,7 @@
 
 global JSONLoads;
 if (!any $JSONLoads) do={
-	/system script run "JParseFunctions";
+  /system script run "JParseFunctions";
 }
 
 global Llogin;
@@ -35,21 +35,43 @@ if (!any $Llogin) do={
 
       :return true;
     } else={
-      # Never test this
       :log error "Auto-Login: Can not login... server-msg: $($content->"message")";
-      :log info ($content);
       :return false;
     }
   }
 }
 
-global LcheckConnection;
-  if (!any $LcheckConnection) do={
-  :global LcheckConnection do={
+global LloginLoop;
+if (!any $LloginLoop) do={
+  :global LloginLoop do={
     global Llogin;
+    :local retry 0;
+    while (([$Llogin] = false) && ($retry < 3)) do={
+      :set retry ($retry + 1);
+      :log info "Auto-Login:  Retry Login..."
+      :delay 3s;
+    }
+    if ($retry >= 3) do={
+      :log error "Auto-Login: Cannot loin. Please recheck your username and password...";
+    } else={
+      :log info "Auto-Login: Finish Login";
+      # Set scheduler for AutoReLogin
+      if ([$1] != "AutoRe") do={
+        if ([system scheduler find name="AutoLogin-AutoReLogin"] = "") do={
+          /system scheduler add name="AutoLogin-AutoReLogin" on-event="global LloginLoop;\r\n\$LloginLoop \"AutoRe\";";
+        }
+        /system scheduler set "AutoLogin-AutoReLogin" interval=[:totime "9h30m" ] start-time=[/system clock get time];
+      }
+    }
+  }
+}
+
+global LcheckConnection;
+if (!any $LcheckConnection) do={
+  :global LcheckConnection do={
     :local detect "nonono";
     :do {
-      :put [:resolve server=8.8.8.8 www.google.com];
+      :put [:resolve server=1.1.1.1 www.google.com];
     } on-error={
       :return "nointernet";
     }
@@ -75,16 +97,12 @@ global LcheckConnection;
 global Lhearbeat;
 if (!any $Lhearbeat) do={
   :global Lhearbeat do={
-    global LAccount; global LSessionId; global LToken; global LServerIP; global LcheckConnection; global Llogin; global JSONLoad; global JSONLoads; global JSONUnload;
+    global LAccount; global LSessionId; global LToken; global LServerIP;
+    global LcheckConnection; global LloginLoop; global JSONLoad; global JSONLoads; global JSONUnload;
     
     if ([$LcheckConnection] = "notlogin") do={
       :log info "Auto-Login:  Lost Connection, Retry login..."
-      :local retry 0;
-      while (([$Llogin] = false) && ($retry < 10)) do={
-        :set retry ($retry + 1);
-        :log info "Auto-Login:  Retry Login..."
-        :delay 3s;
-      }
+      $LloginLoop;
     }
 
     :local data "userName=$LAccount&sessionId=$LSessionId";
@@ -96,7 +114,7 @@ if (!any $Lhearbeat) do={
     } else={
       :log error "Auto-Login: HeartBeat ERROR... server-msg: $($content->"message")";
       $LcheckConnection
-      $Llogin;
+      $LloginLoop;
     }
   }
 }
@@ -108,24 +126,14 @@ if (!any $Linit) do={
     if ([system scheduler find name="AutoLogin-AutoStart"] = "") do={
       /system scheduler add on-event=":delay 10s;\r\n/system script run \"Auto-Login-KMITL\";" name="AutoLogin-AutoStart" start-time=startup;
     }
-    global LcheckConnection; global Llogin;
+    global LcheckConnection; global LloginLoop;
     :log info "Auto-Login: Run Check connection...";
     while ([$LcheckConnection] = "nointernet") do={
       :log info "Auto-Login:  Retry Connection..."
       :delay 3s;
     }
     :log info "Auto-Login: Run Login";
-    :local retry 0;
-    while (([$Llogin] = false) && ($retry < 10)) do={
-      :set retry ($retry + 1);
-      :log info "Auto-Login:  Retry Login..."
-      :delay 3s;
-    }
-    if ($retry >= 10) do={
-      :log error "Auto-Login: Cannot loin. Please recheck your username and password...";
-    } else={
-      :log info "Auto-Login: Finish Login";
-    }
+    $LloginLoop;
   }
 }
 
