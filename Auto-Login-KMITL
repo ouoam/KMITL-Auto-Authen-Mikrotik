@@ -31,7 +31,7 @@ if (!any $Llogin) do={
       if ([system scheduler find name="AutoLogin-Hearbeat"] = "") do={
         /system scheduler add name="AutoLogin-Hearbeat" on-event="global Lhearbeat;\r\n\$Lhearbeat;";
       }
-      /system scheduler set "AutoLogin-Hearbeat" interval=$Heatbeat start-time=[/system clock get time];
+      /system scheduler set "AutoLogin-Hearbeat" interval=$Heatbeat start-date=[/system clock get date] start-time=[/system clock get time];
 
       :return true;
     } else={
@@ -49,10 +49,10 @@ if (!any $LloginLoop) do={
     while (([$Llogin] = false) && ($retry < 3)) do={
       :set retry ($retry + 1);
       :log info "Auto-Login:  Retry Login..."
-      :delay 3s;
+      :delay 1s;
     }
     if ($retry >= 3) do={
-      :log error "Auto-Login: Cannot loin. Please recheck your username and password...";
+      :log error "Auto-Login: Cannot login. Please recheck your username and password...";
     } else={
       :log info "Auto-Login: Finish Login";
       # Set scheduler for AutoReLogin
@@ -60,7 +60,7 @@ if (!any $LloginLoop) do={
         if ([system scheduler find name="AutoLogin-AutoReLogin"] = "") do={
           /system scheduler add name="AutoLogin-AutoReLogin" on-event="global LloginLoop;\r\n\$LloginLoop \"AutoRe\";";
         }
-        /system scheduler set "AutoLogin-AutoReLogin" interval=[:totime "9h30m" ] start-time=[/system clock get time];
+        /system scheduler set "AutoLogin-AutoReLogin" interval=[:totime "9h30m" ] start-date=[/system clock get date] start-time=[/system clock get time];
       }
     }
   }
