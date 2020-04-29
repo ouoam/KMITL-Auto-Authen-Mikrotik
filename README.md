@@ -35,7 +35,7 @@ You **can not** change Heartbeat interval, it will use value form authen server.
 | `loginPass` | Password | Password to login |
 
 ## Credit
-* **_Member in Network Laboratory_** for [Auto Authen KMITL](https://gitlab.com/networklab-kmitl/auto-authen-kmitl) written in Pythen language (and some README.md)
+* **_Member in Network Laboratory_** for [Auto Authen KMITL](https://gitlab.com/networklab-kmitl/auto-authen-kmitl) written in Python language (and some README.md)
 * **_[@mayueeeee](https://github.com/mayueeeee)_** for [KMITL-Auto-Authen](https://github.com/mayueeeee/KMITL-Auto-Authen) written in Go language
 
 ## Thank
