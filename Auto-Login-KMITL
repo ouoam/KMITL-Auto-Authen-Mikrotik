@@ -1,141 +1,340 @@
-:global loginUser "";
-:global loginPass "";
+# spell-checker:words totime tonum kmitl mikrotik
 
-:global loginServer "http://connect.kmitl.ac.th:8080";
+################################# Login script ################################
+# spell-checker:ignore JSESSIONID Heatbeat
+:if ([/system script find name="Auto-Login-KMITL"] != "") do={
+  /system script set "Auto-Login-KMITL" name="AutoLogin-Login"; # rename old
+}
+:if ([/system script find name="AutoLogin-Login"] = "") do={
+  /system script add name="AutoLogin-Login";
+}
+/system script set "AutoLogin-Login" policy=policy,read,test,write source={
+:log debug "Auto-Login: Logging in...";
+global ParseJSON;
+:local config [:parse (":return {" . [/system script get AutoLogin-Config source] . "};")]
+:local account [$config];
+:local serverIP;
+:do {
+  :set serverIP [:resolve connect.kmitl.ac.th];
+} on-error={
+  # when use DoH and not login yet, will no dns record in cache and can not query new
+  :set serverIP [:resolve server=1.1.1.1 connect.kmitl.ac.th];
+}
+:local data "userName=$($account->"username")&password=$($account->"password")";
+:local url "http://$serverIP:8080/PortalServer/Webauth/webAuthAction!login.action";
+:local content ([/tool fetch http-method=post http-data=$data url=$url host="connect.kmitl.ac.th:8080" as-value output=user]->"data");
 
-global JSONLoads;
-if (!any $JSONLoads) do={
-  /system script run "JParseFunctions";
+:if ([$ParseJSON $content "success" true] = false) do={
+  :log error "Auto-Login: Can not login... server-msg: $[$ParseJSON $content "message" true]";
+  :return false;
 }
 
-global Llogin;
-if (!any $Llogin) do={
-  :global Llogin do={
-    :log info "Auto-Login: Loging in..."
-    global loginServer; global loginUser; global loginPass; global JSONLoad; global JSONLoads; global JSONUnload;
-    :local data "userName=$loginUser&password=$loginPass&browserFlag=en";
-    :local url "$loginServer/PortalServer/Webauth/webAuthAction!login.action";
-    :local content ([/tool fetch http-method=post http-data=$data url=$url as-value output=user]->"data");
-    :set content [$JSONLoads $content];
-    if ($content->"success") do={
-      :global LServerIP ($content->"data"->"belongedSCIP");
-      :global LAccount ($content->"data"->"account");
-      :global LSessionId ($content->"data"->"sessionId");
-      :local token ($content->"token");
-      :global LToken [:pick $token 6 [:len $token]];
-      :local Heatbeat [:totime (($content->"data"->"webHeatbeatPeriod") . "ms")];
+:local sessionId [$ParseJSON $content "sessionId"];
+:local token [$ParseJSON $content "token" true];
+:set token [:pick $token 6 [:len $token]];
 
-      :log info "Auto-Login: Login sucessful  USER:$LAccount IP:$($content->"data"->"ip")";
+# not implement case: external cisco login (httpPortalAuth == true)
 
-      # Set scheduler for heartbeat
-      if ([system scheduler find name="AutoLogin-Hearbeat"] = "") do={
-        /system scheduler add name="AutoLogin-Hearbeat" on-event="global Lhearbeat;\r\n\$Lhearbeat;";
-      }
-      /system scheduler set "AutoLogin-Hearbeat" interval=$Heatbeat start-date=[/system clock get date] start-time=[/system clock get time];
+:if ([$ParseJSON $content "portalAuth"] && ([$ParseJSON $content "httpPortalAuth"] = false)) do={
+  # :delay 1s;
+  :local status "sync";
 
-      :return true;
-    } else={
-      :log error "Auto-Login: Can not login... server-msg: $($content->"message")";
+  :do {
+    :log debug "Auto-Login: Sync Portal Auth Result... $serverIP";
+    :local url "http://$serverIP:8080/PortalServer/Webauth/webAuthAction!syncPortalAuthResult.action";
+    :local content2 ([/tool fetch http-method=post url=$url http-header-field="Cookie:JSESSIONID=$sessionId" host="$serverIP:8080" as-value output=user]->"data");
+
+    :if ([$ParseJSON $content2 "message" true] = "EmptySessionId") do={
+      :log error "Auto-Login: Can not login... EmptySessionId";
       :return false;
     }
+
+    :if ([$ParseJSON $content2 "success" true] = false) do={
+      :log error "Auto-Login: Can not login... Sync not success... msg: $[$ParseJSON $content2 "message" true]";
+      :return false;
+    }
+
+    :if ([$ParseJSON $content2 "portalAuthStatus"] != 0 && [$ParseJSON $content2 "portalAuthStatus"] != 1) do={
+      :if ([$ParseJSON $content2 "portalErrorCode"] = 0) do={
+        :log warning "Auto-Login: Can not login... Maybe you already login this device";
+      } else={
+        :log error "Auto-Login: Can not login... Please recheck your username and password... code:$[$ParseJSON $content2 "portalErrorCode"]";
+      }
+      :return false;
+    }
+
+    # only portal auth status 0 and 1 can be here
+    :if ([$ParseJSON $content2 "portalAuthStatus"] = 0) do={
+      # Wait for sync again
+      :local delayTime [:totime ([$ParseJSON $content2 "webPortalOvertimePeriod"] . "ms")];
+      :delay $delayTime;
+    } else={
+      # success
+      :set status "success";
+    }
+  } while=($status = "sync");
+}
+
+# only success status can here
+:global LServerIP $serverIP;
+:global LAccount [$ParseJSON $content "account"];
+:global LSessionId $sessionId;
+:global LToken $token;
+:local Heartbeat [:totime ([$ParseJSON $content "webHeatbeatPeriod"] . "ms")];
+
+:log info "Auto-Login: Login successful  USER:$LAccount IP:$[$ParseJSON $content "ip"]";
+:log debug "Auto-Login: Login info $sessionId $token";
+
+# Set scheduler for heartbeat and AutoReLogin
+/system scheduler set "AutoLogin-Heartbeat" interval=$Heartbeat start-date=[/system clock get date] start-time=[/system clock get time];
+/system scheduler set "AutoLogin-AutoReLogin" start-date=[/system clock get date] start-time=[/system clock get time];
+
+:return true;
+};
+
+################################ Utility script ###############################
+
+:if ([/system script find name="AutoLogin-Utility"] = "") do={
+  /system script add name="AutoLogin-Utility";
+}
+/system script set "AutoLogin-Utility" policy=policy,read,test,write source={
+:global CheckConnection do={
+  :local googleIP;
+  :do {
+    :set googleIP [:resolve server=1.1.1.1 www.google.com];
+  } on-error={
+    :log warning "Auto-Login: No Internet...";
+    :return "noInternet";
+  }
+
+  # detect web portal
+  :local detect ([/tool fetch url="http://$googleIP/generate_204" as-value output=user]->"data");
+
+  :if ($detect = "") do={
+    :return "logged-in";
+  } else={
+    :return "notLogin";
   }
 }
 
-global LloginLoop;
-if (!any $LloginLoop) do={
-  :global LloginLoop do={
-    global Llogin;
-    :local retry 0;
-    while (([$Llogin] = false) && ($retry < 3)) do={
-      :set retry ($retry + 1);
-      :log info "Auto-Login:  Retry Login..."
-      :delay 1s;
-    }
-    if ($retry >= 3) do={
-      :log error "Auto-Login: Cannot login. Please recheck your username and password...";
+:global ParseJSON do={
+  # mini JSON parser use only with minify JSON
+  # will error when have any whitespace character or double object close `}}`
+  # not implement array
+  # $1 <str> JSON to parse
+  # $2 <str> key to find
+  # $3 <bool> skip key data object or array if other not skip
+
+  :local start 0;
+  :if ($3 = true) do={
+    :if ([:pick $1 8] = "{") do={
+      :set start ([:find $1 "}"]);
     } else={
-      :log info "Auto-Login: Finish Login";
-      # Set scheduler for AutoReLogin
-      if ([$1] != "AutoRe") do={
-        if ([system scheduler find name="AutoLogin-AutoReLogin"] = "") do={
-          /system scheduler add name="AutoLogin-AutoReLogin" on-event="global LloginLoop;\r\n\$LloginLoop \"AutoRe\";";
-        }
-        /system scheduler set "AutoLogin-AutoReLogin" interval=[:totime "9h30m" ] start-date=[/system clock get date] start-time=[/system clock get time];
+      :if ([:pick $1 8] = "[") do={
+        :set start ([:find $1 "]"]);
       }
     }
   }
-}
-
-global LcheckConnection;
-if (!any $LcheckConnection) do={
-  :global LcheckConnection do={
-    :local detect "nonono";
-    :do {
-      :put [:resolve server=1.1.1.1 www.google.com];
-    } on-error={
-      :return "nointernet";
-    }
-    :do {
-      :set detect ([/tool fetch url=http://clients3.google.com/generate_204 as-value output=user]->"data");
-    } on-error={
-      :return "notlogin";
-    }
-    if ($detect = "") do={
-      :return "loged-in";
-    } else={
-      :do {
-        # http://connect.kmitl.ac.th:8080
-        :global loginServer [:pick $detect ([:find $detect "URL="]+4) [:find $detect "/portal"]];
-      } on-error={
-        # :global loginServer "http://connect.kmitl.ac.th:8080";
-      };
-      :return "notlogin";
-    }
+  :set start ([:find $1 $2 $start] + [:len $2] + 2);
+  :local end [:find $1 "," $start];
+  :if ([:pick $1 ($end-1)] = "}") do={
+    :set end ($end-1);
   }
+  :local out [:pick $1 $start $end];
+  :if ([:pick $out] = "\"") do={
+    :return [:pick $1 ($start+1) ($end-1)];
+  }
+  :if ($out = "null") do={
+    :return [];
+  }
+  :if ($out = "true") do={
+    :return true;
+  }
+  :if ($out = "false") do={
+    :return false;
+  }
+  :if ($out ~ "^[0-9.+-]+\$") do={
+    :return [:tonum $out];
+  }
+  :put "Cannot Parse JSON object";
+  :return [];
 }
 
-global Lhearbeat;
-if (!any $Lhearbeat) do={
-  :global Lhearbeat do={
-    global LAccount; global LSessionId; global LToken; global LServerIP;
-    global LcheckConnection; global LloginLoop; global JSONLoad; global JSONLoads; global JSONUnload;
-    
-    if ([$LcheckConnection] = "notlogin") do={
-      :log info "Auto-Login:  Lost Connection, Retry login..."
-      $LloginLoop;
-    }
+:global UnloadUtil do={
+  global CheckConnection; set CheckConnection;
+  global ParseJSON; set ParseJSON;
+  global UnloadUtil; set UnloadUtil;
+}
+}
 
+############################# AutoStart scheduler #############################
+
+:if ([/system scheduler find name="AutoLogin-AutoStart"] = "") do={
+  /system scheduler add name="AutoLogin-AutoStart";
+}
+/system scheduler set "AutoLogin-AutoStart" start-time=startup policy=policy,read,test,write on-event={
+:delay 10s;
+:log debug "Auto-Login: startup...";
+/system script run "AutoLogin-Utility";
+global CheckConnection;
+:while ([$CheckConnection] = "noInternet") do={
+  :delay 3s;
+  :log debug "Auto-Login: Run Check connection...";
+}
+
+/system script run "AutoLogin-Login";
+global UnloadUtil; $UnloadUtil;
+};
+
+############################ AutoReLogin scheduler ############################
+
+:if ([/system scheduler find name="AutoLogin-AutoReLogin"] = "") do={
+  /system scheduler add name="AutoLogin-AutoReLogin";
+}
+/system scheduler set "AutoLogin-AutoReLogin" interval=[:totime "9h59m55s"] policy=policy,read,test,write on-event={
+:log debug "Auto-Login: Will check connection and re-login when login session timeout...";
+/system script run "AutoLogin-Utility";
+global CheckConnection;
+:local loop 0;
+:do {
+  :local internet [$CheckConnection];
+  :if ($internet = "noInternet") do={
+    global UnloadUtil; $UnloadUtil;
+    :return false;
+  }
+  :if ($internet = "notLogin") do={
+    :set loop 200;
+  } else={
+    :log debug "Auto-Login: Recheck connection...";
+    :set loop ($loop + 1);
+    # delay for recheck lost connection
+    # :delay 1s; # call CheckConnection already use 1s
+  }
+} while=($loop < 10);
+
+:if ($loop != 200) do={
+  :log warning "Auto-Login: Wait for session timeout is timeout. Not login...";
+  global UnloadUtil; $UnloadUtil;
+  :return false;
+}
+
+/system script run "AutoLogin-Login";
+global UnloadUtil; $UnloadUtil;
+};
+
+############################# Heartbeat scheduler #############################
+# spell-checker:ignore Hearbeat XSRF
+:if ([/system scheduler find name="AutoLogin-Hearbeat"] != "") do={
+  # change old incorrect spell
+  /system scheduler set "AutoLogin-Hearbeat" name="AutoLogin-Heartbeat";
+}
+:if ([/system scheduler find name="AutoLogin-Heartbeat"] = "") do={
+  /system scheduler add name="AutoLogin-Heartbeat";
+}
+/system scheduler set "AutoLogin-Heartbeat" policy=policy,read,test,write on-event={
+/system script run "AutoLogin-Utility";
+global CheckConnection; global ParseJSON;
+:if ([$CheckConnection] = "notLogin") do={
+  :log warning "Auto-Login: Lost Connection, Retry login...";
+  /system script run "AutoLogin-Login";
+} else={
+  global LAccount; global LSessionId; global LToken; global LServerIP;
+  if ((any $LAccount) && (any $LSessionId) && (any $LToken) && (any $LServerIP)) do={
     :local data "userName=$LAccount&sessionId=$LSessionId";
     :local url "http://$LServerIP:8080/PortalServer/Webauth/webAuthAction!hearbeat.action";
     :local content ([/tool fetch http-method=post http-data=$data url=$url http-header-field="X-XSRF-TOKEN:$LToken" host="$LServerIP:8080" as-value output=user]->"data");
-    :set content [$JSONLoads $content];
-    if ($content->"data" = "ONLINE") do={
+    :if ([$ParseJSON $content "data"] = "ONLINE") do={
       :log info "Auto-Login: HeartBeat OK...";
     } else={
-      :log error "Auto-Login: HeartBeat ERROR... server-msg: $($content->"message")";
-      $LcheckConnection
-      $LloginLoop;
+      :log error "Auto-Login: HeartBeat ERROR... server-msg: $[$ParseJSON $content "message" true]";
+      /system script run "AutoLogin-Login";
     }
   }
 }
 
-global Linit;
-if (!any $Linit) do={
-  :global Linit do={
-    :log info "Auto-Login: init..."
-    if ([system scheduler find name="AutoLogin-AutoStart"] = "") do={
-      /system scheduler add on-event=":delay 10s;\r\n/system script run \"Auto-Login-KMITL\";" name="AutoLogin-AutoStart" start-time=startup;
+global UnloadUtil; $UnloadUtil;
+};
+
+############################# remove old variable #############################
+# spell-checker:ignore Lcheck Lhearbeat Linit Llogin
+global LcheckConnection; set LcheckConnection;
+global Lhearbeat; set Lhearbeat;
+global Linit; set Linit;
+global Llogin; set Llogin;
+global LloginLoop; set LloginLoop;
+global loginServer; set loginServer;
+global JSONUnload; $JSONUnload; set JSONUnload;
+
+############################### setup new script ##############################
+# spell-checker:ignore dont abcdefghijklmnopqrstuvwxyz inkey
+:if ([/system script find name="AutoLogin-Config"] = "") do={
+  global loginUser; global loginPass;
+  :if (!any $loginUser || !any $loginPass) do={
+    :local input do={
+      :local out "";
+      :local mask "";
+      :local in "";
+      :local ascii " !\"#\$%&'()*+,-./0123456789:;<=>\?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_`abcdefghijklmnopqrstuvwxyz{|}~";
+      :if (!any $1) do={
+        :set $1 "enter text";
+      }
+      :put "$1 : ";
+      :do {
+        /terminal cuu count=1;
+        /terminal el;
+        :if ($2 = true) do={
+          :put "$1 : $mask";
+        } else={
+          :put "$1 : $out";
+        }
+        :set in [/terminal inkey timeout=60];
+        :if (32 <= $in && $in < 128) do={
+          :local char [:pick $ascii ($in-32)]
+          :set out ($out . $char);
+          :set mask ($mask . "*");
+        } else={
+          if ($in = 8) do={
+            :set out [:pick $out 0 ([:len $out] - 1)]
+            :set mask [:pick $mask 0 ([:len $mask] - 1)]
+          }
+        }
+      } while=(in != 13); # enter
+      :return $out
+    };
+
+    :put "Please enter your username and password to use auto-login";
+    :put "Do not enter @kmitl.ac.th in username"
+    :set loginUser [$input "Username"];
+    :set loginPass [$input "Password" true];
+  }
+  /system script add name="AutoLogin-Config" dont-require-permissions=yes source="username=\"$loginUser\";\r\npassword=\"$loginPass\";";
+  set loginUser; set loginPass;
+}
+
+/system script run "AutoLogin-Utility";
+:global CheckConnection;
+:local internet [$CheckConnection];
+:if ($internet = "notLogin") do={
+  :put "Let's login. (Watch status in log)";
+  /system script run "AutoLogin-Login";
+} else={
+  :if ($internet = "logged-in") do={
+    :put "Now internet is accessible, Do you want to re-login (y/N)";
+    :local in [/terminal inkey timeout=60];
+    :if (($in %32) = 25) do={
+      :put "Let's login. (Watch status in log)";
+      /system script run "AutoLogin-Login";
     }
-    global LcheckConnection; global LloginLoop;
-    :log info "Auto-Login: Run Check connection...";
-    while ([$LcheckConnection] = "nointernet") do={
-      :log info "Auto-Login:  Retry Connection..."
-      :delay 3s;
-    }
-    :log info "Auto-Login: Run Login";
-    $LloginLoop;
+  }
+}
+global UnloadUtil; $UnloadUtil;
+
+global LAccount; global LSessionId; global LToken; global LServerIP;
+if ((!any $LAccount) || (!any $LSessionId) || (!any $LToken) || (!any $LServerIP)) do={
+  if ([/system scheduler get AutoLogin-Heartbeat interval] = 00:00:00) do={
+    /system scheduler set AutoLogin-Heartbeat interval=1m;
+    :put "Use heartbeat to check login session timeout and auto re-login every 1 minute";
   }
 }
 
-global Linit;
-$Linit;
+:put "Finish setup";
