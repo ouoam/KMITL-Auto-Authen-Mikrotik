@@ -11,6 +11,11 @@
 /system script set "AutoLogin-Login" policy=policy,read,test,write source={
 :log debug "Auto-Login: Logging in...";
 global ParseJSON;
+local isRunUtility false;
+if (!any $ParseJSON) do={
+  /system script run "AutoLogin-Utility";
+  :set isRunUtility true;
+}
 :local config [:parse (":return {" . [/system script get AutoLogin-Config source] . "};")]
 :local account [$config];
 :local serverIP;
@@ -88,6 +93,10 @@ global ParseJSON;
 # Set scheduler for heartbeat and AutoReLogin
 /system scheduler set "AutoLogin-Heartbeat" interval=$Heartbeat start-date=[/system clock get date] start-time=[/system clock get time];
 /system scheduler set "AutoLogin-AutoReLogin" start-date=[/system clock get date] start-time=[/system clock get time];
+
+if ($isRunUtility) do={
+  global UnloadUtil; $UnloadUtil;
+}
 
 :return true;
 };
